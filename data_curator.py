@@ -1,6 +1,8 @@
 import os
 import sys
 import glob
+import math
+import json
 import numpy as np
 import scipy.misc
 from PyQt5.QtWidgets import *
@@ -44,7 +46,8 @@ class ImagePlayer(QMainWindow):
         self.video_bar.addWidget(self.framelabel)
 #-------Frame edit toolbar-----------------------
         self.tagselect=QComboBox()
-        self.tagmanagerbutton=QPushButton("tag manager")
+        self.newtagbutton=QPushButton("new tag") #TODO connect this
+        self.newtagbutton.clicked.connect(self.new_tag)
         self.lbracketframelabel=QLabel()
         self.rbracketframelabel=QLabel()
         self.edit_bar=QToolBar()
@@ -57,7 +60,7 @@ class ImagePlayer(QMainWindow):
         self.edit_bar.addWidget(self.rbracketframelabel)
         self.edit_bar.addAction(self.rbracket_act)
         self.edit_bar.addWidget(self.tagselect)
-        self.edit_bar.addWidget(self.tagmanagerbutton)
+        self.edit_bar.addWidget(self.newtagbutton)
         #set main widget layout, contains image label and video toolbar
         layout=QVBoxLayout()
         layout.addWidget(self.edit_bar)
@@ -96,7 +99,7 @@ class ImagePlayer(QMainWindow):
         self.timer=QTimer()
         self.timer.timeout.connect(self.next_img)
         self.timer.setInterval(25)
-        self.timer_intervals=[250, 125, 50, 25, 12, 5]
+        self.timer_intervals=[250, 125, 50, 25, 12, 6]
 #-------Create MenuBar with Load/Save------------
         filemenu=self.menuBar().addMenu("File")
         filemenu.addAction(self.open_act)
@@ -106,6 +109,15 @@ class ImagePlayer(QMainWindow):
         self.savedir=None
         #self.load_directory()
         #self.update_image(0)
+
+        if os.path.isfile("tags.json"):
+            jsonfile=open("tags.json")
+            self.taglist=json.load(jsonfile)
+            for tag in self.taglist:
+                self.tagselect.addItem(tag)
+        else:
+            self.taglist=[]
+
         self.setWindowTitle("Data Curator")
         self.show()
 
@@ -160,6 +172,11 @@ class ImagePlayer(QMainWindow):
         if self.savedir is None:
             QMessageBox.warning(self, "save name error", "You must select a save directory")
         else:
+            if os.path.isfile(self.savedir+'/tagdata.json'):
+                msg="The directory you are saving in already has content from curation. If you continue, you will overwrite the tagdata json file. Do you want to continue?"
+                if QMessageBox.warning(self, "Warning: Overwrite Data?", msg, QMessageBox.Save|QMessageBox.Cancel, QMessageBox.Cancel)==QMessageBox.Cancel:
+                    return 
+            
             for img, comm in zip(self.img_files, self.comm_files):
                 if self.file_dict[img]['save_toggle']==True:
                     save_indices=self.file_dict[img]['frames']
@@ -168,6 +185,26 @@ class ImagePlayer(QMainWindow):
                     save_imgs=img_data[save_indices, :, :, :]
                     np.savez(self.savedir+'/'+self.file_dict[img]['save_name'], save_imgs)
                     np.savez(self.savedir+'/'+(self.file_dict[img]['save_name']).replace('imgs', 'commands'), comm_data)
+            self.saveJSON()
+            #If we're saving the curated data, it's a good time to save the tags?
+            jsonfile=open("tags.json", "w")
+            json.dumps(self.taglist, jsonfile)
+            jsonfile.close()
+
+    def saveJSON(self):
+        tag_struct=dict() #this is what we'll turn into the JSON data to save
+        for filename, params in self.file_dict.items():
+            if params['tag_dict']!={}:
+                #if tag_dict is nonempty, it should contain tags as keys and lists of frame numbers as values
+                for tag, frames in params['tag_dict'].items():
+                    if frames!=[]:
+                        if tag not in tag_struct.keys():
+                            tag_struct[tag]=dict()
+                        #for each tagged frame, get the new index of the frame in case there were deletions
+                        tag_list[tag][filename]=[params['frames'].index(n) for n in frames] 
+        tag_file=open(self.savedir+"/tagdata.json", 'w')
+        json.dump(tag_struct, tag_file)
+        tag_file.close()
 
     def listItemDif(self, item):
         filename=item.text()
@@ -190,6 +227,7 @@ class ImagePlayer(QMainWindow):
         for f1, f2 in zip(self.img_files, self.comm_files):
             comm_data=np.load(f2)['arr_0']
             self.commdata[f2]=comm_data
+            #NOTE: we need to keep the original frame numbers as we delete frames so that we know what frames are tagged
             self.file_dict[f1]=dict([('frames', [i for i in range(0, comm_data.shape[0])]), 
                 ('applied_stack', []), ('tag_dict', dict()), ('len', comm_data.shape[0]), 
                 ('save_name', os.path.basename(f1)), ('save_toggle', False)]) 
@@ -269,6 +307,13 @@ class ImagePlayer(QMainWindow):
                 self.hopper.setIndex(0) #TODO FIXME this will definitely cause an error eventually
                 self.update_image(0)
 
+    def new_tag(self):
+        ntag=QInputDialog.getText(self, "New Tag", "Enter a new tag name with no whitespace")
+        if ntag[1]==True:
+            self.taglist.append(ntag[0])
+            self.tagselect.addItem(ntag[0])
+
+
     def next_img(self):
         #display next image, or 10 images ahead if called by 10x skip action
         if self.sender()==self.next_frame10x_act:
@@ -300,7 +345,7 @@ class ImagePlayer(QMainWindow):
         if self.left_bracket[0]==self.right_bracket[0] and self.left_bracket[1]>self.right_bracket[1]:
             QMessageBox.warning(self, "Bracketing Error", "The right bracket must come after the left bracket")
             return
-        ###Fucky stuff here:
+        #There must be a better way to do this
         self.hopper.setIndex(self.left_bracket[1], self.img_files.index(self.left_bracket[0]))
         self.hopper.prev(self.autoplaycheckbox.isChecked())
         if fstartindex==fstopindex:
@@ -338,6 +383,9 @@ class ImagePlayer(QMainWindow):
         self.global_redo_stack=[]
 
     def tagframes(self):
+        tagname=self.tagselect.currentText()
+        fstartindex=self.img_files.index(self.left_bracket[0])
+        fstopindex=self.img_files.index(self.right_bracket[0])
         if self.img_files.index(self.left_bracket[0])>self.img_files.index(self.right_bracket[0]):
             QMessageBox.warning(self, "Bracketing Error", "The right bracket must come after the left bracket")
             return 
@@ -345,6 +393,33 @@ class ImagePlayer(QMainWindow):
             QMessageBox.warning(self, "Bracketing Error", "The right bracket must come after the left bracket")
             return
         self.global_redo_stack=[]
+        if fstartindex==fstopindex:
+            #tagging a subset of frames in a single file
+            tAction=tagAction(self.left_bracket[1], self.right_bracket[1], self.file_dict[self.left_bracket[0]], tagname)
+            tAction.apply()
+            self.global_undo_stack.append([tAction])
+        elif (fstopindex-fstartindex)==1:
+            #begin a tag in one file and end it in the next
+            btAction=tagAction(self.left_bracket[1], self.file_dict[self.left_bracket[0]]['len']-1, self.file_dict[self.left_bracket[0]], tagname)
+            etAction=tagAction(0, self.right_bracket[1], self.file_dict[self.right_bracket[0]], tagname)
+            btAction.apply()
+            etAction.apply()
+            self.global_undo_stack.append([btAction, etAction])
+        else:
+            #tag action spans multiple files
+            btAction=tagAction(self.left_bracket[1], self.file_dict[self.left_bracket[0]]['len']-1, self.file_dict[self.left_bracket[0]], tagname)
+            etAction=tagAction(0, self.right_bracket[1], self.file_dict[self.right_bracket[0]], tagname)
+            actionlist=[]
+            for i in range(fstartindex+1, fstopindex):
+                ntAction=tagAction(0, self.file_dict[self.img_files[i]]['len']-1, self.file_dict[self.img_files[i]], tagname)
+                actionlist.append(ntAction)
+            btAction.apply()
+            for a in actionlist:
+                a.apply()
+            etAction.apply()
+            actionlist.append(etAction)
+            actionlist.insert(0, btAction)
+            self.global_undo_stack.append(actionlist)
 
     def bracketframes(self):
         if self.sender()==self.lbracket_act:
@@ -396,14 +471,16 @@ class ImagePlayer(QMainWindow):
         speed_idx=self.timer_intervals.index(self.timer.interval())
         if speed_idx<(len(self.timer_intervals)-1):
             self.timer.setInterval(self.timer_intervals[speed_idx+1])
-            self.speedlabel.setText("{0}x playback".format(100.0/self.timer_intervals[speed_idx+1]))
+            ntimerval=25.0/self.timer_intervals[speed_idx+1]
+            self.speedlabel.setText("{0}x playback".format(math.floor(ntimerval) if ntimerval>1 else ntimerval))
 
     def speed_down(self):
         #decrease playback speed by increasing timer interval, calling next_img less often
         speed_idx=self.timer_intervals.index(self.timer.interval())
         if speed_idx>0:
             self.timer.setInterval(self.timer_intervals[speed_idx-1])
-            self.speedlabel.setText("{0}x playback".format(100.0/self.timer_intervals[speed_idx-1]))
+            ntimerval=25.0/self.timer_intervals[speed_idx-1]
+            self.speedlabel.setText("{0}x playback".format(math.floor(ntimerval) if ntimerval>1 else ntimerval))
 
     def update_image(self, n):
         #set current frame index to n, and update image window
