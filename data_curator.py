@@ -201,7 +201,7 @@ class ImagePlayer(QMainWindow):
                         if tag not in tag_struct.keys():
                             tag_struct[tag]=dict()
                         #for each tagged frame, get the new index of the frame in case there were deletions
-                        tag_list[tag][filename]=[params['frames'].index(n) for n in frames] 
+                        tag_struct[tag][filename]=[params['frames'].index(n) for n in frames] 
         tag_file=open(self.savedir+"/tagdata.json", 'w')
         json.dump(tag_struct, tag_file)
         tag_file.close()
